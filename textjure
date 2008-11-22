@@ -1,0 +1,9 @@
+#!/bin/bash
+exec java -Xbootclasspath/a:clojure.jar -server \
+  -cp $HOME/build/qtjambi-linux32-gpl-4.4.0_01/qtjambi-4.4.0_01.jar\
+:$HOME/build/qtjambi-linux32-gpl-4.4.0_01/qtjambi-linux32-gcc-4.4.0_01.jar\
+:$HOME/build/clojure/clojure.jar\
+:$HOME/proj/clojure-contrib/src \
+  clojure.lang.Script \
+  $HOME/proj/textjure/textjure.clj \
+  -- "$@"
