@@ -3,7 +3,8 @@
                         SwingUtilities Action KeyStroke)
            (java.awt Insets Font Color Dimension)
            (java.awt.event InputMethodListener)
-           (javax.swing.text JTextComponent)))
+           (javax.swing.text SimpleAttributeSet StyleConstants
+                             JTextComponent)))
 
 (defn hex-color
   "Takes a 6-digit hex string and returns a Color object"
@@ -52,6 +53,17 @@
     #^{:doc "Main file edit pane"}
     (make-text-pane))
 
+  (def print-style
+    #^{:doc "Style to be used for text printed (not typed) to the REPL"}
+    (SimpleAttributeSet.))
+  (StyleConstants/setForeground print-style (hex-color "808bed"))
+
+  (def err-style
+    #^{:doc "Style to be used for error text printed to the REPL"}
+    (SimpleAttributeSet.))
+  (StyleConstants/setBackground err-style (hex-color "6e2e2e"))
+  (StyleConstants/setForeground err-style (hex-color "ffffff"))
+
   (doto (JFrame.)
     (.add (JSplitPane. JSplitPane/VERTICAL_SPLIT
                       (doto (JScrollPane. repl-pane)
@@ -67,7 +79,7 @@
 (def repl-var-defaults
   #^{:doc "Map of vars to be bound for REPLs,
           with their default initial values"}
-  {:*ns* (find-ns 'user)
+  {:*ns* (find-ns 'user) ; XXX neither set! nor in-ns seem to work
    :*warn-on-reflection* false
    :*print-meta* false
    :*print-length* 103
@@ -97,21 +109,31 @@
   #^{:doc "Agent that manages the state of the main REPL. See also repl-pane."}
   (agent repl-var-defaults))
 
+(defn append-to-pane [pane text style]
+  (let [doc (.getDocument pane)
+        len (.getLength doc)]
+    (.insertString doc len text style)
+    (.setCaretPosition pane (+ len (.length text)))))
+
 (defn repl-eval
   "Binds the var/value map given by vars and evaluats the Clojure text
   string in that binding context.  Returns a new var/value map
   reflecting any changes made by any 'set!' in the text expression."
-  [vars text]
+  [vars text pane]
   (repl-binding vars
     (try
       (let [ret (load-string text)]
-        (println "return:" ret)
+        (append-to-pane pane (str "\n" (prn-str ret)) print-style)
         (set! *3 *2)
         (set! *2 *1)
         (set! *1 ret))
       (catch Throwable e
-        (println "err:" (last (take-while identity (iterate #(.getCause %) e))))
-        (set! *e e)))))
+        (set! *e e)
+        (append-to-pane pane
+                    (str "\n"
+                         (last (take-while identity (iterate #(.getCause %) e)))
+                         "\n")
+                    err-style)))))
 
 (defn bind-key-fn
   "Adds a keybinding for keystroke-str to keymap, such that when the
@@ -126,7 +148,7 @@
     (.addActionForKeyStroke keymap
       (KeyStroke/getKeyStroke keystroke-str)
       (proxy [Action] []
-        (actionPerformed [e] (func e))
+        (actionPerformed [e] (func {:source (.getSource e)}))
         (isEnabled [] true)
         (getValue [k] nil)))))
 
@@ -146,20 +168,16 @@
     (.removeKeyStrokeBinding keymap (KeyStroke/getKeyStroke keystroke-str))))
 
 (bind-key repl-keymap "ENTER"
-  (prn :pane (.getSource event))
-  (unbind-key repl-keymap "ENTER"))
+  ; events are handled in a swing thread, so it's ok to call .getText directly
+  (send-off repl-agent repl-eval
+            (last (.split (.getText (:source event)) "\n")) ; XXX slow
+            (:source event)))
 
 ;  (.addInputMethodListener repl-pane (proxy [InputMethodListener] []
 ;                                       (caretPositionChanged [e] (prn :caret e))
 ;                                       (inputMethodTextChanged [e] (prn :input e)))))
 
-;(import '(javax.swing.text SimpleAttributeSet Style StyleConstants))
-;(def defaultStyle (SimpleAttributeSet.))
-;(StyleConstants/setForeground defaultStyle (hex-color "cfbfad"))
-;(.setLogicalStyle textPane defaultStyle)
-;
 ;(javax.swing.text.DefaultStyledDocument$ElementSpec. defaultStyle, javax.swing.text.DefaultStyledDocument$ElementSpec/ContentType (into-array Character/TYPE "hello") 0 5); (.getDocument textPane)
-
 
 ;(.putClientProperty textPane JTextPane/HONOR_DISPLAY_PROPERTIES true)
 
