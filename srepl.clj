@@ -7,10 +7,10 @@
                              JTextComponent)))
 
 (defn hex-color
-  "Takes a 6-digit hex string and returns a Color object"
-  [s]
-  (let [[r g b]
-        (map #(Integer/parseInt (apply str %) 16) (partition 2 s))]
+  "Expects a six-hex-digit int and returns a Color object"
+  [n]
+  (let [[b g r]
+        (map #(rem % 256) (take-while pos? (iterate #(quot % 256) n)))]
     (Color. r g b)))
 
 (declare repl-keymap)
@@ -21,9 +21,9 @@
   (doto (JTextPane.)
     (.setCaretPosition 0)
     (.setMargin (Insets. 4 4 4 4))
-    (.setCaretColor (hex-color "8b8bff"))
-    (.setForeground (hex-color "cfbfad"))
-    (.setBackground (hex-color "1e1e27"))
+    (.setCaretColor (hex-color 0x8b8bff))
+    (.setForeground (hex-color 0xcfbfad))
+    (.setBackground (hex-color 0x1e1e27))
     (.setFont (Font. "Andale Mono" Font/PLAIN 16))))
 
 (defn make-repl-pane
@@ -56,13 +56,13 @@
   (def print-style
     #^{:doc "Style to be used for text printed (not typed) to the REPL"}
     (SimpleAttributeSet.))
-  (StyleConstants/setForeground print-style (hex-color "808bed"))
+  (StyleConstants/setForeground print-style (hex-color 0x808bed))
 
   (def err-style
     #^{:doc "Style to be used for error text printed to the REPL"}
     (SimpleAttributeSet.))
-  (StyleConstants/setBackground err-style (hex-color "6e2e2e"))
-  (StyleConstants/setForeground err-style (hex-color "ffffff"))
+  (StyleConstants/setBackground err-style (hex-color 0x6e2e2e))
+  (StyleConstants/setForeground err-style (hex-color 0xffffff))
 
   (doto (JFrame.)
     (.add (JSplitPane. JSplitPane/VERTICAL_SPLIT
