@@ -2,6 +2,7 @@
   (:import (javax.swing JTextPane JScrollPane JFrame JSplitPane
                         SwingUtilities Action KeyStroke)
            (java.awt Insets Font Color Dimension)
+           (java.io PushbackReader StringReader)
            (java.awt.event InputMethodListener)
            (javax.swing.text SimpleAttributeSet StyleConstants
                              JTextComponent)))
@@ -12,6 +13,13 @@
   (let [[b g r]
         (map #(rem % 256) (take-while pos? (iterate #(quot % 256) n)))]
     (Color. r g b)))
+
+(defmacro make-map [& body]
+  `(with-local-vars [~'*made-map* {}] ~@body))
+
+(defmacro do-map [k & doto-body]
+  `(let [v# (doto ~@doto-body)]
+     (set! ~'*made-map* (assoc ~'*made-map* k v#))))
 
 (declare repl-keymap)
 
@@ -30,6 +38,7 @@
   "Creates a GUI pane to be used as a REPL"
   []
   (doto (make-text-pane)
+    (.setFont (Font. "Andale Mono" Font/BOLD 16))
     (.setKeymap repl-keymap)))
 
 (defmacro doswing
@@ -53,23 +62,31 @@
     #^{:doc "Main file edit pane"}
     (make-text-pane))
 
-  (def print-style
+  (def print-style ; inkpot Statement
     #^{:doc "Style to be used for text printed (not typed) to the REPL"}
-    (SimpleAttributeSet.))
-  (StyleConstants/setForeground print-style (hex-color 0x808bed))
+    (doto (SimpleAttributeSet.)
+      (StyleConstants/setBold false)
+      (StyleConstants/setForeground (hex-color 0x808bed))))
 
-  (def err-style
+  (def err-style ; inkpot Error
     #^{:doc "Style to be used for error text printed to the REPL"}
-    (SimpleAttributeSet.))
-  (StyleConstants/setBackground err-style (hex-color 0x6e2e2e))
-  (StyleConstants/setForeground err-style (hex-color 0xffffff))
+    (doto (SimpleAttributeSet.)
+      (StyleConstants/setBold false)
+      (StyleConstants/setBackground (hex-color 0x6e2e2e))
+      (StyleConstants/setForeground (hex-color 0xffffff))))
+
+  (def debug-style ; inkpot Comment
+    #^{:doc "Style to be used for printing debug text to the REPL"}
+    (doto (SimpleAttributeSet.)
+      (StyleConstants/setBold false)
+      (StyleConstants/setForeground (hex-color 0xcd8b00))))
 
   (doto (JFrame.)
     (.add (JSplitPane. JSplitPane/VERTICAL_SPLIT
                       (doto (JScrollPane. repl-pane)
                         (.setPreferredSize (Dimension. 800 300)))
                       (JScrollPane. file-pane)))
-    ; onclose do (System/exit 0) ; XXX
+    (.setDefaultCloseOperation JFrame/EXIT_ON_CLOSE)
     .pack .show))
 
 (when *command-line-args*
@@ -79,7 +96,7 @@
 (def repl-var-defaults
   #^{:doc "Map of vars to be bound for REPLs,
           with their default initial values"}
-  {:*ns* (find-ns 'user) ; XXX neither set! nor in-ns seem to work
+  {:*ns* (find-ns 'srepl)
    :*warn-on-reflection* false
    :*print-meta* false
    :*print-length* 103
@@ -110,10 +127,11 @@
   (agent repl-var-defaults))
 
 (defn append-to-pane [pane text style]
-  (let [doc (.getDocument pane)
-        len (.getLength doc)]
-    (.insertString doc len text style)
-    (.setCaretPosition pane (+ len (.length text)))))
+  (doswing ; insertString is thread-safe, but the other methods are not.
+    (let [doc (.getDocument pane)
+          len (.getLength doc)]
+      (.insertString doc len text style)
+      (.setCaretPosition pane (+ len (.length text))))))
 
 (defn repl-eval
   "Binds the var/value map given by vars and evaluats the Clojure text
@@ -121,19 +139,24 @@
   reflecting any changes made by any 'set!' in the text expression."
   [vars text pane]
   (repl-binding vars
-    (try
-      (let [ret (load-string text)]
-        (append-to-pane pane (str "\n" (prn-str ret)) print-style)
-        (set! *3 *2)
-        (set! *2 *1)
-        (set! *1 ret))
-      (catch Throwable e
-        (set! *e e)
-        (append-to-pane pane
-                    (str "\n"
-                         (last (take-while identity (iterate #(.getCause %) e)))
-                         "\n")
-                    err-style)))))
+    (append-to-pane pane "\n" print-style)
+    (let [reader (PushbackReader. (StringReader. text))]
+      (try
+        (loop []
+          (let [f (read reader false reader false)]
+            (when-not (identical? f reader)
+              (let [ret (eval f)]
+                (append-to-pane pane (prn-str ret) print-style)
+                (set! *3 *2)
+                (set! *2 *1)
+                (set! *1 ret))
+              (recur))))
+        (catch Throwable e
+          (set! *e e)
+          (append-to-pane pane
+                          (str (last (take-while identity
+                                        (iterate #(.getCause %) e))) "\n")
+                          err-style))))))
 
 (defn bind-key-fn
   "Adds a keybinding for keystroke-str to keymap, such that when the
