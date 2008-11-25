@@ -2,7 +2,7 @@
   (:import (javax.swing JTextPane JScrollPane JFrame JSplitPane
                         SwingUtilities Action KeyStroke)
            (java.awt Insets Font Color Dimension)
-           (java.io PushbackReader StringReader)
+           (java.io PushbackReader StringReader OutputStream PrintWriter)
            (java.awt.event InputMethodListener)
            (javax.swing.text SimpleAttributeSet StyleConstants
                              JTextComponent)))
@@ -43,12 +43,74 @@
 
 (defmacro doswing
   "Macro.  Returns nil immediately.  Causes its body to be run later
-  in the Swing thread."
+  in the Swing thread.  See also doswing-wait"
   [& body]
   `(SwingUtilities/invokeLater #(do ~@body)))
 
-; -- main --
-(doswing
+(defmacro doswing-wait
+  "Macro.  Causes its body to be run later in the Swing thread, blocks
+  until complete.  Returns nil.  See also doswing"
+  [& body]
+  `(SwingUtilities/invokeAndWait #(do ~@body)))
+
+(def print-style ; inkpot Statement
+  #^{:doc "Style to be used for text printed (not typed) to the REPL"}
+  (doto (SimpleAttributeSet.)
+    (StyleConstants/setBold false)
+    (StyleConstants/setForeground (hex-color 0x808bed))))
+
+(def err-style ; inkpot Error
+  #^{:doc "Style to be used for error text printed to the REPL"}
+  (doto (SimpleAttributeSet.)
+    (StyleConstants/setBold false)
+    (StyleConstants/setBackground (hex-color 0x6e2e2e))
+    (StyleConstants/setForeground (hex-color 0xffffff))))
+
+(def debug-style ; inkpot Comment
+  #^{:doc "Style to be used for printing debug text to the REPL"}
+  (doto (SimpleAttributeSet.)
+    (StyleConstants/setBold false)
+    (StyleConstants/setForeground (hex-color 0xcd8b00))))
+
+(def no-eol-style ; inkpot String
+  #^{:doc "Style to be used to indicate a line does not end in newline"}
+  (doto (SimpleAttributeSet.)
+    (StyleConstants/setBackground (hex-color 0x404040))
+    (StyleConstants/setForeground (hex-color 0xffcd8b))))
+
+(defn append-to-pane [pane text style]
+  (doswing ; insertString is thread-safe, but the other methods are not.
+    (let [doc (.getDocument pane)
+          len (.getLength doc)]
+      (.insertString doc len text style)
+      (.setCaretPosition pane (+ len (.length text))))))
+
+(defn make-pane-stream [pane style]
+  (let [w (java.io.StringWriter.)]
+    (proxy [java.io.Writer] []
+      (write [b & [off len]]
+        (if (or (integer? b) (string? b))
+          (.write w b)
+          (.write w b off len)))
+      (flush []
+        (append-to-pane pane (str w) style)
+        (.setLength (.getBuffer w) 0))
+      (close []
+        ; Since 'close' is pretty meaningless, use it here to signal
+        ; completion, meaning buffers should have lines terminated and
+        ; be flushed
+        (let [buf (.getBuffer w)
+              len (.length buf)
+              needs-term (and (pos? len)
+                              (not= \newline (.charAt buf (dec len))))]
+          (.flush this)
+          (when needs-term
+            (append-to-pane pane "*\n" no-eol-style)))))))
+
+(defn complete-stream [stream]
+  (.close stream))
+
+(doswing-wait
   (def repl-keymap
     #^{:doc "KeyMap to be used in REPL panes"}
     (JTextComponent/addKeymap
@@ -60,27 +122,10 @@
 
   (def file-pane
     #^{:doc "Main file edit pane"}
-    (make-text-pane))
+    (make-text-pane)))
 
-  (def print-style ; inkpot Statement
-    #^{:doc "Style to be used for text printed (not typed) to the REPL"}
-    (doto (SimpleAttributeSet.)
-      (StyleConstants/setBold false)
-      (StyleConstants/setForeground (hex-color 0x808bed))))
-
-  (def err-style ; inkpot Error
-    #^{:doc "Style to be used for error text printed to the REPL"}
-    (doto (SimpleAttributeSet.)
-      (StyleConstants/setBold false)
-      (StyleConstants/setBackground (hex-color 0x6e2e2e))
-      (StyleConstants/setForeground (hex-color 0xffffff))))
-
-  (def debug-style ; inkpot Comment
-    #^{:doc "Style to be used for printing debug text to the REPL"}
-    (doto (SimpleAttributeSet.)
-      (StyleConstants/setBold false)
-      (StyleConstants/setForeground (hex-color 0xcd8b00))))
-
+; -- main --
+(doswing
   (doto (JFrame.)
     (.add (JSplitPane. JSplitPane/VERTICAL_SPLIT
                       (doto (JScrollPane. repl-pane)
@@ -102,6 +147,8 @@
    :*print-length* 103
    :*print-level* 15
    :*compile-path* "classes"
+   :*out* nil
+   :*err* nil
    :*1 nil
    :*2 nil
    :*3 nil
@@ -122,16 +169,12 @@
          ~(apply hash-map (mapcat (fn [[k v]] [k (symbol (name k))])
                                   repl-var-defaults))))))
 
+(def repl-out (make-pane-stream repl-pane debug-style))
+(def repl-err (make-pane-stream repl-pane err-style))
+
 (def repl-agent
   #^{:doc "Agent that manages the state of the main REPL. See also repl-pane."}
-  (agent repl-var-defaults))
-
-(defn append-to-pane [pane text style]
-  (doswing ; insertString is thread-safe, but the other methods are not.
-    (let [doc (.getDocument pane)
-          len (.getLength doc)]
-      (.insertString doc len text style)
-      (.setCaretPosition pane (+ len (.length text))))))
+  (agent (assoc repl-var-defaults :*out* repl-out :*err repl-err)))
 
 (defn repl-eval
   "Binds the var/value map given by vars and evaluats the Clojure text
@@ -156,7 +199,9 @@
           (append-to-pane pane
                           (str (last (take-while identity
                                         (iterate #(.getCause %) e))) "\n")
-                          err-style))))))
+                          err-style))))
+    (complete-stream repl-out)
+    (complete-stream repl-err)))
 
 (defn bind-key-fn
   "Adds a keybinding for keystroke-str to keymap, such that when the
