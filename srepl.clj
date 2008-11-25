@@ -1,3 +1,7 @@
+; srepl.clj -- Clojure REPL and editor using Swing GUI components
+; Copyright Nov 2008 Chris Houser <chouser at n01se dot net>
+; Released under the GNU GPL version 2
+
 (ns srepl
   (:import (javax.swing JTextPane JScrollPane JFrame JSplitPane
                         SwingUtilities Action KeyStroke)
