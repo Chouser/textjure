@@ -9,7 +9,8 @@
            (java.io PushbackReader StringReader OutputStream PrintWriter)
            (java.awt.event InputMethodListener)
            (javax.swing.text SimpleAttributeSet StyleConstants
-                             JTextComponent)))
+                             JTextComponent))
+  (:use [clojure.contrib.def :only (defvar-)]))
 
 (defn hex-color
   "Expects a six-hex-digit int and returns a Color object"
@@ -57,30 +58,29 @@
   [& body]
   `(SwingUtilities/invokeAndWait #(do ~@body)))
 
-(def print-style ; inkpot Statement
-  #^{:doc "Style to be used for text printed (not typed) to the REPL"}
-  (doto (SimpleAttributeSet.)
-    (StyleConstants/setBold false)
-    (StyleConstants/setForeground (hex-color 0x808bed))))
+(defvar- style-setters
+  {:bold ['setBold identity]
+   :fg   ['setForeground #(list 'hex-color %)]
+   :bg   ['setBackground #(list 'hex-color %)]})
 
-(def err-style ; inkpot Error
-  #^{:doc "Style to be used for error text printed to the REPL"}
-  (doto (SimpleAttributeSet.)
-    (StyleConstants/setBold false)
-    (StyleConstants/setBackground (hex-color 0x6e2e2e))
-    (StyleConstants/setForeground (hex-color 0xffffff))))
+(defmacro def-style [nm & items]
+  `(def ~(with-meta nm (assoc ^nm :doc (last items)))
+     (doto (new ~'SimpleAttributeSet)
+       ~@(for [[k v] (partition 2 items)]
+           (let [[method valfn] (style-setters k)]
+             (list (symbol "StyleConstants" (name method)) (valfn v)))))))
 
-(def debug-style ; inkpot Comment
-  #^{:doc "Style to be used for printing debug text to the REPL"}
-  (doto (SimpleAttributeSet.)
-    (StyleConstants/setBold false)
-    (StyleConstants/setForeground (hex-color 0xcd8b00))))
+(def-style print-style :bold false, :fg 0x808bed ; inkpot Statement
+  "Style to be used for text printed (not typed) to the REPL")
 
-(def no-eol-style ; inkpot String
-  #^{:doc "Style to be used to indicate a line does not end in newline"}
-  (doto (SimpleAttributeSet.)
-    (StyleConstants/setBackground (hex-color 0x404040))
-    (StyleConstants/setForeground (hex-color 0xffcd8b))))
+(def-style err-style :bold false :bg 0x6e2e2e :fg 0xffffff ; inkpot Error
+  "Style to be used for error text printed to the REPL")
+
+(def-style debug-style :bold false :fg 0xcd8b00 ; inkpot Comment
+  "Style to be used for printing debug text to the REPL")
+
+(def-style no-eol-style :bg 0x404040 :fg 0xffcd8b ; inkpot String
+  "Style to be used to indicate a line does not end in newline")
 
 (defn append-to-pane [pane text style]
   (doswing ; insertString is thread-safe, but the other methods are not.
