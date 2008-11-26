@@ -4,27 +4,30 @@
 
 (ns srepl
   (:import (javax.swing JTextPane JScrollPane JFrame JSplitPane
-                        SwingUtilities Action KeyStroke)
+                        SwingUtilities Action KeyStroke Box BoxLayout)
            (java.awt Insets Font Color Dimension)
            (java.io PushbackReader StringReader OutputStream PrintWriter)
            (java.awt.event InputMethodListener)
            (javax.swing.text SimpleAttributeSet StyleConstants
                              JTextComponent))
-  (:use [clojure.contrib.def :only (defvar-)]))
+  (:use [clojure.contrib.def :only (defvar)]))
 
 (defn hex-color
   "Expects a six-hex-digit int and returns a Color object"
   [n]
   (let [[b g r]
-        (map #(rem % 256) (take-while pos? (iterate #(quot % 256) n)))]
+        (map #(rem % 256) (take 3 (iterate #(quot % 256) n)))]
     (Color. r g b)))
 
 (defmacro make-map [& body]
-  `(with-local-vars [~'*made-map* {}] ~@body))
+  `(with-local-vars [~'*made-map* {}]
+     ~@body
+     (var-get ~'*made-map*)))
 
 (defmacro do-map [k & doto-body]
   `(let [v# (doto ~@doto-body)]
-     (set! ~'*made-map* (assoc ~'*made-map* k v#))))
+     (var-set ~'*made-map* (assoc (var-get ~'*made-map*) ~k v#))
+     v#))
 
 (declare repl-keymap)
 
@@ -39,12 +42,20 @@
     (.setBackground (hex-color 0x1e1e27))
     (.setFont (Font. "Andale Mono" Font/PLAIN 16))))
 
-(defn make-repl-pane
-  "Creates a GUI pane to be used as a REPL"
+(defn make-repl-widget
+  "Creates a new REPL context with a GUI widget attached"
   []
-  (doto (make-text-pane)
-    (.setFont (Font. "Andale Mono" Font/BOLD 16))
-    (.setKeymap repl-keymap)))
+  (let [widget (make-map
+                 (do-map :outer (Box. BoxLayout/PAGE_AXIS)
+                   (.add (doto (JScrollPane. (do-map :log (make-text-pane)))
+                           ;(-> .getViewport (.setBackground (hex-color 0)))
+                           (.setPreferredSize (Dimension. 800 250))))
+                   (.add (JScrollPane.
+                           (do-map :input (make-text-pane)
+                             (.setFont (Font. "Andale Mono" Font/BOLD 16))
+                             (.setKeymap repl-keymap))))))]
+    (.putClientProperty (:input widget) :widget widget)
+    widget))
 
 (defmacro doswing
   "Macro.  Returns nil immediately.  Causes its body to be run later
@@ -58,10 +69,13 @@
   [& body]
   `(SwingUtilities/invokeAndWait #(do ~@body)))
 
-(defvar- style-setters
+(defvar style-setters
   {:bold ['setBold identity]
    :fg   ['setForeground #(list 'hex-color %)]
-   :bg   ['setBackground #(list 'hex-color %)]})
+   :bg   ['setBackground #(list 'hex-color %)]}
+  "Maps simple style keywords to a vector [method-name, func], where
+  method-name is a static method of the AttributeSet class and func
+  converts a simple value to the object needed by the method.")
 
 (defmacro def-style [nm & items]
   `(def ~(with-meta nm (assoc ^nm :doc (last items)))
@@ -69,6 +83,9 @@
        ~@(for [[k v] (partition 2 items)]
            (let [[method valfn] (style-setters k)]
              (list (symbol "StyleConstants" (name method)) (valfn v)))))))
+
+(def-style input-style :bold true, :fg 0xcfbfad
+  "Style to be used for text entered into the REPL by the user")
 
 (def-style print-style :bold false, :fg 0x808bed ; inkpot Statement
   "Style to be used for text printed (not typed) to the REPL")
@@ -120,9 +137,9 @@
     (JTextComponent/addKeymap
       "repl" (JTextComponent/getKeymap JTextComponent/DEFAULT_KEYMAP)))
 
-  (def repl-pane
-    #^{:doc "Main REPL pane"}
-    (make-repl-pane))
+  (def repl-widget
+    #^{:doc "Main REPL widget"}
+    (make-repl-widget))
 
   (def file-pane
     #^{:doc "Main file edit pane"}
@@ -132,11 +149,11 @@
 (doswing
   (doto (JFrame.)
     (.add (JSplitPane. JSplitPane/VERTICAL_SPLIT
-                      (doto (JScrollPane. repl-pane)
-                        (.setPreferredSize (Dimension. 800 300)))
+                      (:outer repl-widget)
                       (JScrollPane. file-pane)))
     (.setDefaultCloseOperation JFrame/EXIT_ON_CLOSE)
-    .pack .show))
+    .pack (.setVisible true))
+  (.requestFocusInWindow (:input repl-widget)))
 
 (when *command-line-args*
   (let [text (slurp (first *command-line-args*))]
@@ -173,8 +190,8 @@
          ~(apply hash-map (mapcat (fn [[k v]] [k (symbol (name k))])
                                   repl-var-defaults))))))
 
-(def repl-out (make-pane-stream repl-pane debug-style))
-(def repl-err (make-pane-stream repl-pane err-style))
+(def repl-out (make-pane-stream (:log repl-widget) debug-style))
+(def repl-err (make-pane-stream (:log repl-widget) err-style))
 
 (def repl-agent
   #^{:doc "Agent that manages the state of the main REPL. See also repl-pane."}
@@ -185,8 +202,8 @@
   string in that binding context.  Returns a new var/value map
   reflecting any changes made by any 'set!' in the text expression."
   [vars text pane]
+  (append-to-pane pane (str text "\n") input-style)
   (repl-binding vars
-    (append-to-pane pane "\n" print-style)
     (let [reader (PushbackReader. (StringReader. text))]
       (try
         (loop []
@@ -220,7 +237,9 @@
     (.addActionForKeyStroke keymap
       (KeyStroke/getKeyStroke keystroke-str)
       (proxy [Action] []
-        (actionPerformed [e] (func {:source (.getSource e)}))
+        (actionPerformed [e] (func {:source (.getSource e)
+                                    :widget (.getClientProperty
+                                              (.getSource e) :widget)}))
         (isEnabled [] true)
         (getValue [k] nil)))))
 
@@ -242,8 +261,9 @@
 (bind-key repl-keymap "ENTER"
   ; events are handled in a swing thread, so it's ok to call .getText directly
   (send-off repl-agent repl-eval
-            (last (.split (.getText (:source event)) "\n")) ; XXX slow
-            (:source event)))
+            (.getText (:input (:widget event)))
+            (:log (:widget event)))
+  (.setText (:input (:widget event)) nil))
 
 ;  (.addInputMethodListener repl-pane (proxy [InputMethodListener] []
 ;                                       (caretPositionChanged [e] (prn :caret e))
