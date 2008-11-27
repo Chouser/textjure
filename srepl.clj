@@ -69,8 +69,15 @@
   [& body]
   `(SwingUtilities/invokeAndWait #(do ~@body)))
 
+(defn fonts-for-char [c]
+  (filter #(.canDisplay (Font. % Font/PLAIN 16) c)
+          (.getAvailableFontFamilyNames
+            (java.awt.GraphicsEnvironment/getLocalGraphicsEnvironment))))
+
 (defvar style-setters
   {:bold ['setBold identity]
+   :font-family ['setFontFamily identity]
+   :size ['setFontSize identity]
    :fg   ['setForeground #(list 'hex-color %)]
    :bg   ['setBackground #(list 'hex-color %)]}
   "Maps simple style keywords to a vector [method-name, func], where
@@ -96,7 +103,8 @@
 (def-style debug-style :bold false :fg 0xcd8b00 ; inkpot Comment
   "Style to be used for printing debug text to the REPL")
 
-(def-style no-eol-style :bg 0x404040 :fg 0xffcd8b ; inkpot String
+(def-style no-eol-style :bg 0x404040 :fg 0xffcd8b ; based on inkpot String
+                        :font-family "DejaVu Sans Mono" :bold false
   "Style to be used to indicate a line does not end in newline")
 
 (defn append-to-pane [pane text style]
@@ -132,18 +140,13 @@
   (.close stream))
 
 (doswing-wait
-  (def repl-keymap
-    #^{:doc "KeyMap to be used in REPL panes"}
+  (defvar repl-keymap
     (JTextComponent/addKeymap
-      "repl" (JTextComponent/getKeymap JTextComponent/DEFAULT_KEYMAP)))
+      "repl" (JTextComponent/getKeymap JTextComponent/DEFAULT_KEYMAP))
+    "KeyMap to be used in REPL panes")
 
-  (def repl-widget
-    #^{:doc "Main REPL widget"}
-    (make-repl-widget))
-
-  (def file-pane
-    #^{:doc "Main file edit pane"}
-    (make-text-pane)))
+  (defvar repl-widget (make-repl-widget) "Main REPL widget")
+  (defvar file-pane   (make-text-pane)   "Main file edit pane"))
 
 ; -- main --
 (doswing
