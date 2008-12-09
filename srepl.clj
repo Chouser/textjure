@@ -10,7 +10,7 @@
            (java.io PushbackReader StringReader OutputStream PrintWriter)
            (java.awt.event InputMethodListener)
            (javax.swing.text SimpleAttributeSet StyleConstants
-                             JTextComponent))
+                             JTextComponent DefaultStyledDocument))
   (:use [clojure.contrib.def :only (defvar)]))
 
 (defn hex-color
@@ -40,16 +40,26 @@
 (defn make-text-pane
   "Creates a default-styled GUI text pane to be used as a file editor or REPL"
   []
-  (doto (proxy [JTextPane] []
-          (setSize [dim] (proxy-super setSize
-                                      (.width dim)
-                                      (.height (.getPreferredSize this)))))
-    (.setCaretPosition 0)
-    (.setMargin (Insets. 4 4 4 4))
-    (.setCaretColor (hex-color 0x8b8bff))
-    (.setForeground (hex-color 0xcfbfad))
-    (.setBackground (hex-color 0x1e1e27))
-    (.setFont (Font. "Andale Mono" Font/PLAIN 16))))
+  (let [check-filter (fn [doc details]
+                       (let [f (.getProperty doc :input-filter)]
+                         (or (nil? f) (f details))))
+        doc (proxy [DefaultStyledDocument] []
+              (insertString [off s attrs]
+                (when (check-filter this {:type :insert :offset off :str s})
+                  (proxy-super insertString off s attrs)))
+              (remove [off len]
+                (when (check-filter this {:type :remove :offset off :len len})
+                  (proxy-super remove off len))))]
+    (doto (proxy [JTextPane] [doc]
+            (setSize [dim] (proxy-super setSize
+                                        (.width dim)
+                                        (.height (.getPreferredSize this)))))
+      (.setCaretPosition 0)
+      (.setMargin (Insets. 4 4 4 4))
+      (.setCaretColor (hex-color 0x8b8bff))
+      (.setForeground (hex-color 0xcfbfad))
+      (.setBackground (hex-color 0x1e1e27))
+      (.setFont (Font. "Andale Mono" Font/PLAIN 16)))))
 
 (defn anchor-page-end [obj]
   "Returns a new Container with component obj inside it, anchored to
@@ -115,15 +125,18 @@
                         :font-family "DejaVu Sans Mono" :bold false
   "Style to be used to indicate a line does not end in newline")
 
+(def *appending-to-widget* false)
+
 (defn append-to-widget [widget text style]
   (when (seq text)
     (doswing ; insertString is thread-safe, but the other methods are not.
       (let [pane (:log widget)
             doc (.getDocument pane)]
-        (.insertString doc @(:log-end widget) text style)
-        (swap! (:log-end widget) + (.length text))
-        (.setCaretPosition pane (.getLength doc))
-        (.setCharacterAttributes doc (.getLength doc) 1 input-style true)))))
+        (binding [*appending-to-widget* true]
+          (.insertString doc @(:log-end widget) text style)
+          (swap! (:log-end widget) + (.length text))
+          (.setCaretPosition pane (.getLength doc))
+          (.setCharacterAttributes doc (.getLength doc) 1 input-style true))))))
 
 (defn make-widget-stream [widget style]
   (let [w (java.io.StringWriter.)]
@@ -162,6 +175,9 @@
                          (-> .getViewport (.setBackground (hex-color 0)))))]
     (append-to-widget widget "Clojure\n" debug-style) ; set default style
     (.putClientProperty (:log widget) :widget widget)
+    (.putProperty (.getDocument (:log widget)) :input-filter
+                  (fn [{off :offset}]
+                    (or *appending-to-widget* (>= off @(:log-end widget)))))
     widget))
 
 (doswing-wait
