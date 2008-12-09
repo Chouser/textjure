@@ -121,7 +121,7 @@
       (let [pane (:log widget)
             doc (.getDocument pane)]
         (.insertString doc @(:log-end widget) text style)
-        (dosync (alter (:log-end widget) + (.length text)))
+        (swap! (:log-end widget) + (.length text))
         (.setCaretPosition pane (.getLength doc))
         (.setCharacterAttributes doc (.getLength doc) 1 input-style true)))))
 
@@ -154,7 +154,7 @@
   "Creates a new REPL context with a GUI widget attached"
   []
   (let [widget (into-map
-                 (do-map :log-end (ref 0))
+                 (do-map :log-end (atom 0))
                  (do-map :outer (JScrollPane.
                                   (anchor-page-end
                                     (do-map :log (make-text-pane)
@@ -172,8 +172,6 @@
 
   (defvar repl-widget (make-repl-widget) "Main REPL widget")
   (defvar file-pane   (make-text-pane)   "Main file edit pane"))
-
-(prn :rw-le (:log-end repl-widget))
 
 ; -- main --
 
@@ -239,7 +237,7 @@
   (let [doc (.getDocument (:log widget)) ; XXX should be in Swing thread?
         offset @(:log-end widget)
         text (.getText doc offset (- (.getLength doc) offset))]
-    (dosync (ref-set (:log-end widget) (.getLength doc)))
+    (swap! (:log-end widget) + (.length text))
     (append-to-widget widget "\n" input-style) ; XXX only if complete expr
     (repl-binding vars
       (let [reader (PushbackReader. (StringReader. text))]
