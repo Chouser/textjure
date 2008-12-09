@@ -4,8 +4,9 @@
 
 (ns srepl
   (:import (javax.swing JTextPane JScrollPane JFrame JSplitPane
-                        SwingUtilities Action KeyStroke Box BoxLayout)
-           (java.awt Insets Font Color Dimension)
+                        SwingUtilities Action KeyStroke)
+           (java.awt Insets Font Color Dimension Container
+                     GridBagLayout GridBagConstraints)
            (java.io PushbackReader StringReader OutputStream PrintWriter)
            (java.awt.event InputMethodListener)
            (javax.swing.text SimpleAttributeSet StyleConstants
@@ -19,22 +20,30 @@
         (map #(rem % 256) (take 3 (iterate #(quot % 256) n)))]
     (Color. r g b)))
 
-(defmacro make-map [& body]
+(defmacro into-map [& body]
   `(with-local-vars [~'*made-map* {}]
      ~@body
      (var-get ~'*made-map*)))
 
-(defmacro do-map [k & doto-body]
-  `(let [v# (doto ~@doto-body)]
-     (var-set ~'*made-map* (assoc (var-get ~'*made-map*) ~k v#))
-     v#))
+(defmacro do-map [& args]
+  (let [[keywords body] (split-with keyword? args)
+        obj (gensym)]
+    (if keywords
+      `(let [~obj (doto ~@body)]
+         (var-set ~'*made-map* (conj (var-get ~'*made-map*)
+                                     ~@(for [k keywords] [k obj])))
+         ~obj)
+      `(doto ~@args))))
 
 (declare repl-keymap)
 
 (defn make-text-pane
   "Creates a default-styled GUI text pane to be used as a file editor or REPL"
   []
-  (doto (JTextPane.)
+  (doto (proxy [JTextPane] []
+          (setSize [dim] (proxy-super setSize
+                                      (.width dim)
+                                      (.height (.getPreferredSize this)))))
     (.setCaretPosition 0)
     (.setMargin (Insets. 4 4 4 4))
     (.setCaretColor (hex-color 0x8b8bff))
@@ -42,20 +51,19 @@
     (.setBackground (hex-color 0x1e1e27))
     (.setFont (Font. "Andale Mono" Font/PLAIN 16))))
 
-(defn make-repl-widget
-  "Creates a new REPL context with a GUI widget attached"
-  []
-  (let [widget (make-map
-                 (do-map :outer (Box. BoxLayout/PAGE_AXIS)
-                   (.add (doto (JScrollPane. (do-map :log (make-text-pane)))
-                           ;(-> .getViewport (.setBackground (hex-color 0)))
-                           (.setPreferredSize (Dimension. 800 250))))
-                   (.add (JScrollPane.
-                           (do-map :input (make-text-pane)
-                             (.setFont (Font. "Andale Mono" Font/BOLD 16))
-                             (.setKeymap repl-keymap))))))]
-    (.putClientProperty (:input widget) :widget widget)
-    widget))
+(defn anchor-page-end [obj]
+  "Returns a new Container with component obj inside it, anchored to
+  the PAGE_END (usually the bottom)"
+  (let [parent (doto (Container.) (.add obj))
+        l (GridBagLayout.)
+        c (GridBagConstraints.)]
+    (set! (.fill c) GridBagConstraints/HORIZONTAL)
+    (set! (.anchor c) GridBagConstraints/PAGE_END)
+    (set! (.weightx c) 1.0)
+    (set! (.weighty c) 1.0)
+    (.setConstraints l obj c)
+    (.setLayout parent l)
+    parent))
 
 (defmacro doswing
   "Macro.  Returns nil immediately.  Causes its body to be run later
@@ -107,14 +115,17 @@
                         :font-family "DejaVu Sans Mono" :bold false
   "Style to be used to indicate a line does not end in newline")
 
-(defn append-to-pane [pane text style]
-  (doswing ; insertString is thread-safe, but the other methods are not.
-    (let [doc (.getDocument pane)
-          len (.getLength doc)]
-      (.insertString doc len text style)
-      (.setCaretPosition pane (+ len (.length text))))))
+(defn append-to-widget [widget text style]
+  (when (seq text)
+    (doswing ; insertString is thread-safe, but the other methods are not.
+      (let [pane (:log widget)
+            doc (.getDocument pane)]
+        (.insertString doc @(:log-end widget) text style)
+        (dosync (alter (:log-end widget) + (.length text)))
+        (.setCaretPosition pane (.getLength doc))
+        (.setCharacterAttributes doc (.getLength doc) 1 input-style true)))))
 
-(defn make-pane-stream [pane style]
+(defn make-widget-stream [widget style]
   (let [w (java.io.StringWriter.)]
     (proxy [java.io.Writer] []
       (write [b & [off len]]
@@ -122,7 +133,7 @@
           (.write w b)
           (.write w b off len)))
       (flush []
-        (append-to-pane pane (str w) style)
+        (append-to-widget widget (str w) style)
         (.setLength (.getBuffer w) 0))
       (close []
         ; Since 'close' is pretty meaningless, use it here to signal
@@ -134,10 +145,24 @@
                               (not= \newline (.charAt buf (dec len))))]
           (.flush this)
           (when needs-term
-            (append-to-pane pane "*\n" no-eol-style)))))))
+            (append-to-widget widget "◄\n" no-eol-style)))))))
 
 (defn complete-stream [stream]
   (.close stream))
+
+(defn make-repl-widget
+  "Creates a new REPL context with a GUI widget attached"
+  []
+  (let [widget (into-map
+                 (do-map :log-end (ref 0))
+                 (do-map :outer (JScrollPane.
+                                  (anchor-page-end
+                                    (do-map :log (make-text-pane)
+                                            (.setKeymap repl-keymap))))
+                         (-> .getViewport (.setBackground (hex-color 0)))))]
+    (append-to-widget widget "Clojure\n" debug-style) ; set default style
+    (.putClientProperty (:log widget) :widget widget)
+    widget))
 
 (doswing-wait
   (defvar repl-keymap
@@ -148,19 +173,25 @@
   (defvar repl-widget (make-repl-widget) "Main REPL widget")
   (defvar file-pane   (make-text-pane)   "Main file edit pane"))
 
+(prn :rw-le (:log-end repl-widget))
+
 ; -- main --
-(doswing
-  (doto (JFrame.)
-    (.add (JSplitPane. JSplitPane/VERTICAL_SPLIT
-                      (:outer repl-widget)
-                      (JScrollPane. file-pane)))
-    (.setDefaultCloseOperation JFrame/EXIT_ON_CLOSE)
-    .pack (.setVisible true))
-  (.requestFocusInWindow (:input repl-widget)))
 
 (when *command-line-args*
   (let [text (slurp (first *command-line-args*))]
     (doswing (.setText file-pane text))))
+
+(doswing
+  (doto (JFrame.)
+    (.add (doto (JSplitPane.
+                  JSplitPane/VERTICAL_SPLIT
+                  (doto (JScrollPane. file-pane) ; XXX should be in file-widget
+                    (-> .getViewport (.setBackground (hex-color 0))))
+                  (:outer repl-widget))))
+    (.setDefaultCloseOperation JFrame/EXIT_ON_CLOSE)
+    .pack
+    (.setVisible true))
+  (.requestFocusInWindow (:log repl-widget)))
 
 (def repl-var-defaults
   #^{:doc "Map of vars to be bound for REPLs,
@@ -193,8 +224,8 @@
          ~(apply hash-map (mapcat (fn [[k v]] [k (symbol (name k))])
                                   repl-var-defaults))))))
 
-(def repl-out (make-pane-stream (:log repl-widget) debug-style))
-(def repl-err (make-pane-stream (:log repl-widget) err-style))
+(def repl-out (make-widget-stream repl-widget debug-style))
+(def repl-err (make-widget-stream repl-widget err-style))
 
 (def repl-agent
   #^{:doc "Agent that manages the state of the main REPL. See also repl-pane."}
@@ -204,28 +235,33 @@
   "Binds the var/value map given by vars and evaluats the Clojure text
   string in that binding context.  Returns a new var/value map
   reflecting any changes made by any 'set!' in the text expression."
-  [vars text pane]
-  (append-to-pane pane (str text "\n") input-style)
-  (repl-binding vars
-    (let [reader (PushbackReader. (StringReader. text))]
-      (try
-        (loop []
-          (let [f (read reader false reader false)]
-            (when-not (identical? f reader)
-              (let [ret (eval f)]
-                (append-to-pane pane (prn-str ret) print-style)
-                (set! *3 *2)
-                (set! *2 *1)
-                (set! *1 ret))
-              (recur))))
-        (catch Throwable e
-          (set! *e e)
-          (append-to-pane pane
-                          (str (last (take-while identity
-                                        (iterate #(.getCause %) e))) "\n")
-                          err-style))))
-    (complete-stream repl-out)
-    (complete-stream repl-err)))
+  [vars widget]
+  (let [doc (.getDocument (:log widget)) ; XXX should be in Swing thread?
+        offset @(:log-end widget)
+        text (.getText doc offset (- (.getLength doc) offset))]
+    (dosync (ref-set (:log-end widget) (.getLength doc)))
+    (append-to-widget widget "\n" input-style) ; XXX only if complete expr
+    (repl-binding vars
+      (let [reader (PushbackReader. (StringReader. text))]
+        (try
+          (loop []
+            (let [f (read reader false reader false)]
+              (when-not (identical? f reader)
+                (let [ret (eval f)]
+                  (append-to-widget widget (prn-str ret) print-style)
+                  (set! *3 *2)
+                  (set! *2 *1)
+                  (set! *1 ret))
+                (recur))))
+          (catch Throwable e
+            (set! *e e)
+            (append-to-widget widget
+                              (str (last (take-while
+                                           identity
+                                           (iterate #(.getCause %) e))) "\n")
+                              err-style))))
+                  (complete-stream repl-out)
+                  (complete-stream repl-err))))
 
 (defn bind-key-fn
   "Adds a keybinding for keystroke-str to keymap, such that when the
@@ -262,11 +298,7 @@
     (.removeKeyStrokeBinding keymap (KeyStroke/getKeyStroke keystroke-str))))
 
 (bind-key repl-keymap "ENTER"
-  ; events are handled in a swing thread, so it's ok to call .getText directly
-  (send-off repl-agent repl-eval
-            (.getText (:input (:widget event)))
-            (:log (:widget event)))
-  (.setText (:input (:widget event)) nil))
+  (send-off repl-agent repl-eval (:widget event)))
 
 ;  (.addInputMethodListener repl-pane (proxy [InputMethodListener] []
 ;                                       (caretPositionChanged [e] (prn :caret e))
