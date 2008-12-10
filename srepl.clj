@@ -20,6 +20,11 @@
         (map #(rem % 256) (take 3 (iterate #(quot % 256) n)))]
     (Color. r g b)))
 
+(defmacro hash-map* [sym & body]
+  `(let [~sym {}
+         ~@(mapcat (fn [[k v]] [sym `(assoc ~sym ~k ~v)]) (partition 2 body))]
+     ~sym))
+
 (defmacro into-map [& body]
   `(with-local-vars [~'*made-map* {}]
      ~@body
@@ -35,11 +40,28 @@
          ~obj)
       `(doto ~@args))))
 
+(defmacro doswing
+  "Macro.  Returns nil immediately.  Causes its body to be run later
+  in the Swing thread.  See also doswing-wait"
+  [& body]
+  `(SwingUtilities/invokeLater #(do ~@body)))
+
+(defmacro doswing-wait
+  "Macro.  Causes its body to be run later in the Swing thread, blocks
+  until complete.  Returns nil.  See also doswing"
+  [& body]
+  `(SwingUtilities/invokeAndWait #(do ~@body)))
+
+(defmacro assert-swing
+  []
+  `(assert (SwingUtilities/isEventDispatchThread)))
+
 (declare repl-keymap)
 
 (defn make-text-pane
   "Creates a default-styled GUI text pane to be used as a file editor or REPL"
   []
+  (assert-swing)
   (let [check-filter (fn [doc details]
                        (let [f (.getProperty doc :input-filter)]
                          (or (nil? f) (f details))))
@@ -64,6 +86,7 @@
 (defn anchor-page-end [obj]
   "Returns a new Container with component obj inside it, anchored to
   the PAGE_END (usually the bottom)"
+  (assert-swing)
   (let [parent (doto (Container.) (.add obj))
         l (GridBagLayout.)
         c (GridBagConstraints.)]
@@ -75,19 +98,8 @@
     (.setLayout parent l)
     parent))
 
-(defmacro doswing
-  "Macro.  Returns nil immediately.  Causes its body to be run later
-  in the Swing thread.  See also doswing-wait"
-  [& body]
-  `(SwingUtilities/invokeLater #(do ~@body)))
-
-(defmacro doswing-wait
-  "Macro.  Causes its body to be run later in the Swing thread, blocks
-  until complete.  Returns nil.  See also doswing"
-  [& body]
-  `(SwingUtilities/invokeAndWait #(do ~@body)))
-
 (defn fonts-for-char [c]
+  (assert-swing)
   (filter #(.canDisplay (Font. % Font/PLAIN 16) c)
           (.getAvailableFontFamilyNames
             (java.awt.GraphicsEnvironment/getLocalGraphicsEnvironment))))
@@ -127,7 +139,12 @@
 
 (def *appending-to-widget* false)
 
-(defn append-to-widget [widget text style]
+(defn append-to-widget
+  "Used to programmatically add text to the REPL widget's log.
+  Dynamically binds *appending-to-widget* to true, so that
+  input-filters can allow the updates to happen outside the
+  user-editable region."
+  [widget text style]
   (when (seq text)
     (doswing ; insertString is thread-safe, but the other methods are not.
       (let [pane (:log widget)
@@ -163,17 +180,50 @@
 (defn complete-stream [stream]
   (.close stream))
 
+(def repl-var-defaults
+  #^{:doc "Map of vars to be bound for REPLs,
+          with their default initial values"}
+  {:*ns* (find-ns 'srepl)
+   :*warn-on-reflection* false
+   :*print-meta* false
+   :*print-length* 103
+   :*print-level* 15
+   :*compile-path* "classes"
+   :*out* nil
+   :*err* nil
+   :*1 nil
+   :*2 nil
+   :*3 nil
+   :*e nil})
+
+(defmacro repl-binding
+  "Macro.  Binds repl-vars thread-locally for the evaluation of body.
+  Takes vars as a map of var names and the values to bind to them.
+  Note this macro always binds all the vars given in
+  repl-var-defaults, but uses the values passed in.  Returns a new map
+  reflecting any value changes made by 'set!' in the body.  See repl-eval."
+  [vars & body]
+  (let [varsym (gensym 'vars)]
+    `(let [~varsym ~vars]
+       (binding ~(vec (mapcat (fn [[k v]] [(symbol (name k)) (list varsym k)])
+                              repl-var-defaults))
+         ~@body
+         ~(apply hash-map (mapcat (fn [[k v]] [k (symbol (name k))])
+                                  repl-var-defaults))))))
+
 (defn make-repl-widget
   "Creates a new REPL context with a GUI widget attached"
   []
-  (let [widget (into-map
-                 (do-map :log-end (atom 0))
-                 (do-map :outer (JScrollPane.
-                                  (anchor-page-end
-                                    (do-map :log (make-text-pane)
-                                            (.setKeymap repl-keymap))))
-                         (-> .getViewport (.setBackground (hex-color 0)))))]
-    (append-to-widget widget "Clojure\n" debug-style) ; set default style
+  (assert-swing)
+  (let [widget (hash-map* w
+                 :log (doto (make-text-pane) (.setKeymap repl-keymap))
+                 :outer (doto (JScrollPane. (anchor-page-end (:log w)))
+                          (-> .getViewport (.setBackground (hex-color 0))))
+                 :log-end (atom 0)
+                 :agent (agent (assoc repl-var-defaults
+                                 :*out* (make-widget-stream w debug-style)
+                                 :*err* (make-widget-stream w err-style))))]
+    (append-to-widget widget "Clojure\n" debug-style)
     (.putClientProperty (:log widget) :widget widget)
     (.putProperty (.getDocument (:log widget)) :input-filter
                   (fn [{off :offset}]
@@ -207,75 +257,46 @@
     (.setVisible true))
   (.requestFocusInWindow (:log repl-widget)))
 
-(def repl-var-defaults
-  #^{:doc "Map of vars to be bound for REPLs,
-          with their default initial values"}
-  {:*ns* (find-ns 'srepl)
-   :*warn-on-reflection* false
-   :*print-meta* false
-   :*print-length* 103
-   :*print-level* 15
-   :*compile-path* "classes"
-   :*out* nil
-   :*err* nil
-   :*1 nil
-   :*2 nil
-   :*3 nil
-   :*e nil})
+(defn first-cause
+  "Return the initial or root cause of the given exception."
+  [e]
+  (last (take-while identity (iterate #(.getCause %) e))))
 
-(defmacro repl-binding
-  "Macro.  Binds repl-vars thread-locally for the evaluation of body.
-  Takes vars as a map of var names and the values to bind to them.
-  Note this macro always binds all the vars given in
-  repl-var-defaults, but uses the values passed in.  Returns a new map
-  reflecting any value changes made by 'set!' in the body.  See repl-eval."
-  [vars & body]
-  (let [varsym (gensym 'vars)]
-    `(let [~varsym ~vars]
-       (binding ~(vec (mapcat (fn [[k v]] [(symbol (name k)) (list varsym k)])
-                              repl-var-defaults))
-         ~@body
-         ~(apply hash-map (mapcat (fn [[k v]] [k (symbol (name k))])
-                                  repl-var-defaults))))))
-
-(def repl-out (make-widget-stream repl-widget debug-style))
-(def repl-err (make-widget-stream repl-widget err-style))
-
-(def repl-agent
-  #^{:doc "Agent that manages the state of the main REPL. See also repl-pane."}
-  (agent (assoc repl-var-defaults :*out* repl-out :*err repl-err)))
+(defn report-exception
+  "Report an expection for the given repl widget."
+  [widget e]
+  (set! *e e)
+  (append-to-widget widget (str (first-cause e) "\n") err-style))
 
 (defn repl-eval
-  "Binds the var/value map given by vars and evaluats the Clojure text
+  "Binds the var/value map given by vars and evaluates the Clojure text
   string in that binding context.  Returns a new var/value map
   reflecting any changes made by any 'set!' in the text expression."
-  [vars widget]
-  (let [doc (.getDocument (:log widget)) ; XXX should be in Swing thread?
-        offset @(:log-end widget)
-        text (.getText doc offset (- (.getLength doc) offset))]
-    (swap! (:log-end widget) + (.length text))
-    (append-to-widget widget "\n" input-style) ; XXX only if complete expr
-    (repl-binding vars
-      (let [reader (PushbackReader. (StringReader. text))]
+  [vars widget text]
+  (repl-binding vars
+    (let [eof (Object.)
+          forms (with-open [rdr (PushbackReader. (StringReader. text))]
+                  (try
+                    (doall
+                      (take-while #(not= % eof)
+                                  (repeatedly #(read rdr false eof false))))
+                    (catch Exception e
+                      (when (not= (.getMessage (first-cause e))
+                                  "EOF while reading")
+                        (report-exception widget e)))))]
+      (when forms
+        (swap! (:log-end widget) + (inc (.length text)))
         (try
-          (loop []
-            (let [f (read reader false reader false)]
-              (when-not (identical? f reader)
-                (let [ret (eval f)]
-                  (append-to-widget widget (prn-str ret) print-style)
-                  (set! *3 *2)
-                  (set! *2 *1)
-                  (set! *1 ret))
-                (recur))))
+          (doseq [f forms]
+            (let [ret (eval f)]
+              (append-to-widget widget (prn-str ret) print-style)
+              (set! *3 *2)
+              (set! *2 *1)
+              (set! *1 ret)))
           (catch Throwable e
-            (set! *e e)
-            (append-to-widget widget
-                              (str (last (take-while
-                                           identity
-                                           (iterate #(.getCause %) e))) "\n")
-                              err-style))))
-                  (complete-stream repl-out)
-                  (complete-stream repl-err))))
+            (report-exception widget e))))
+      (complete-stream *out*)
+      (complete-stream *err*))))
 
 (defn bind-key-fn
   "Adds a keybinding for keystroke-str to keymap, such that when the
@@ -312,7 +333,14 @@
     (.removeKeyStrokeBinding keymap (KeyStroke/getKeyStroke keystroke-str))))
 
 (bind-key repl-keymap "ENTER"
-  (send-off repl-agent repl-eval (:widget event)))
+  (assert-swing)
+  (let [widget (:widget event)
+        doc (.getDocument (:log widget))
+        offset @(:log-end widget)
+        text (.getText doc offset (- (.getLength doc) offset))]
+    (.insertString doc (.getLength doc) "\n" input-style)
+    (.setCaretPosition (:log widget) (.getLength doc))
+    (send-off (:agent widget) repl-eval widget text)))
 
 ;  (.addInputMethodListener repl-pane (proxy [InputMethodListener] []
 ;                                       (caretPositionChanged [e] (prn :caret e))
