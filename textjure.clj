@@ -2,7 +2,7 @@
 ; Copyright Nov 2008 Chris Houser <chouser at n01se dot net>
 ; Released under the GNU GPL version 2
 
-(ns srepl
+(ns net.n01se.textjure
   (:import (javax.swing JTextPane JScrollPane JFrame JSplitPane
                         SwingUtilities Action KeyStroke)
            (java.awt Insets Font Color Dimension Container
@@ -10,8 +10,11 @@
            (java.io PushbackReader StringReader OutputStream PrintWriter)
            (java.awt.event InputMethodListener)
            (javax.swing.text SimpleAttributeSet StyleConstants
-                             JTextComponent DefaultStyledDocument))
+                             JTextComponent DefaultStyledDocument)
+           (clojure.lang RT))
   (:use [clojure.contrib.def :only (defvar)]))
+
+(declare repl-keymap repl-widget file-pane)
 
 (defn hex-color
   "Expects a six-hex-digit int and returns a Color object"
@@ -55,8 +58,6 @@
 (defmacro assert-swing
   []
   `(assert (SwingUtilities/isEventDispatchThread)))
-
-(declare repl-keymap)
 
 (defn make-text-pane
   "Creates a default-styled GUI text pane to be used as a file editor or REPL"
@@ -183,7 +184,7 @@
 (def repl-var-defaults
   #^{:doc "Map of vars to be bound for REPLs,
           with their default initial values"}
-  {:*ns* (find-ns 'srepl)
+  {:*ns* (find-ns 'net.n01se.textjure)
    :*warn-on-reflection* false
    :*print-meta* false
    :*print-length* 103
@@ -229,33 +230,6 @@
                   (fn [{off :offset}]
                     (or *appending-to-widget* (>= off @(:log-end widget)))))
     widget))
-
-(doswing-wait
-  (defvar repl-keymap
-    (JTextComponent/addKeymap
-      "repl" (JTextComponent/getKeymap JTextComponent/DEFAULT_KEYMAP))
-    "KeyMap to be used in REPL panes")
-
-  (defvar repl-widget (make-repl-widget) "Main REPL widget")
-  (defvar file-pane   (make-text-pane)   "Main file edit pane"))
-
-; -- main --
-
-(when *command-line-args*
-  (let [text (slurp (first *command-line-args*))]
-    (doswing (.setText file-pane text))))
-
-(doswing
-  (doto (JFrame.)
-    (.add (doto (JSplitPane.
-                  JSplitPane/VERTICAL_SPLIT
-                  (doto (JScrollPane. file-pane) ; XXX should be in file-widget
-                    (-> .getViewport (.setBackground (hex-color 0))))
-                  (:outer repl-widget))))
-    (.setDefaultCloseOperation JFrame/EXIT_ON_CLOSE)
-    .pack
-    (.setVisible true))
-  (.requestFocusInWindow (:log repl-widget)))
 
 (defn first-cause
   "Return the initial or root cause of the given exception."
@@ -332,6 +306,57 @@
   (doswing
     (.removeKeyStrokeBinding keymap (KeyStroke/getKeyStroke keystroke-str))))
 
+(defn read-stream-lines [strm]
+  (loop [buf (StringBuilder.) lines [0 0] p 0]
+    (let [c (.read strm)]
+      (if (< c 0)
+        [(str buf) lines]
+        (recur (.append buf (char c))
+               (if (== c 10) (conj lines (inc p)) lines)
+               (inc p))))))
+
+(defn edit [x]
+  (or (if-let [v (resolve x)]
+        (let [ns-name (str (.name (.ns v)))
+              path (first (re-seq #"^.*(?=/[^/]*$)" (.replace ns-name "." "/")))
+              fname (str path "/" (:file ^v))]
+          (when-let [strm (.getResourceAsStream RT/ROOT_CLASSLOADER fname)]
+            (let [[text lines] (with-open [strm strm] (read-stream-lines strm))]
+              (doswing
+                (doto file-pane
+                  (.setText text)
+                  (.setCaretPosition (lines (:line ^v)))
+                  (.requestFocusInWindow))))
+            fname)))
+        (str "Source not found for " x)))
+
+; -- main --
+
+(doswing-wait
+  (defvar repl-keymap
+    (JTextComponent/addKeymap
+      "repl" (JTextComponent/getKeymap JTextComponent/DEFAULT_KEYMAP))
+    "KeyMap to be used in REPL panes")
+
+  (defvar repl-widget (make-repl-widget) "Main REPL widget")
+  (defvar file-pane   (make-text-pane)   "Main file edit pane"))
+
+(when *command-line-args*
+  (let [text (slurp (first *command-line-args*))]
+    (doswing (.setText file-pane text))))
+
+(doswing
+  (doto (JFrame. "textjure")
+    (.add (doto (JSplitPane.
+                  JSplitPane/VERTICAL_SPLIT
+                  (doto (JScrollPane. file-pane) ; XXX should be in file-widget
+                    (-> .getViewport (.setBackground (hex-color 0))))
+                  (:outer repl-widget))))
+    (.setDefaultCloseOperation JFrame/EXIT_ON_CLOSE)
+    .pack
+    (.setVisible true))
+  (.requestFocusInWindow (:log repl-widget)))
+
 (bind-key repl-keymap "ENTER"
   (assert-swing)
   (let [widget (:widget event)
@@ -341,6 +366,12 @@
     (.insertString doc (.getLength doc) "\n" input-style)
     (.setCaretPosition (:log widget) (.getLength doc))
     (send-off (:agent widget) repl-eval widget text)))
+
+        ;(if-let [strm (.getResourceAsStream (RT/baseLoader) filename)]
+            ;(with-open [rdr (LineNumberedReader. (InputStreamReader. strm))]
+            ;(.setText pane (apply str (for [c (iterate #(.readLine strm))
+            ;                                :while (>= c 0)]
+            ;                            (char c))))
 
 ;  (.addInputMethodListener repl-pane (proxy [InputMethodListener] []
 ;                                       (caretPositionChanged [e] (prn :caret e))
