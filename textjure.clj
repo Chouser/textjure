@@ -330,6 +330,48 @@
             fname)))
         (str "Source not found for " x)))
 
+(def *force-bind?* false)
+
+;(defn opt-x [state-map start-state]
+
+(defn bind-vec [state-map start-state [stroke & strokes :as v]]
+  (if v
+    (let [old-branch (state-map start-state {})]
+      (when (and (old-branch :final) (not *force-bind?*))
+        (throw (Exception. "Existing binding would eclipse new binding")))
+      (cond
+        (vector? stroke)
+          (let [[new-map next-state] (bind-vec state-map start-state stroke)]
+            (recur new-map next-state strokes))
+        (fn? stroke)
+          (let [[new-map next-state] (stroke state-map start-state)]
+            (recur new-map next-state strokes))
+        :else
+          (if-let [old-val (old-branch stroke)]
+            (recur state-map old-val strokes)
+            (let [new-state (gensym 'state)]
+              (recur (assoc-in state-map [start-state stroke] new-state)
+                     new-state strokes)))))
+    [state-map start-state]))
+
+(defn bind-func [state-map start-state gram func]
+  (let [[state-map final-state] (bind-vec state-map start-state gram)]
+    (when-let [old-branch (and (not *force-bind?*) (state-map final-state))]
+      (if (old-branch :final)
+        (throw (Exception. "New binding would replace existing binding"))
+        (throw (Exception. "New binding would eclipse existing binding"))))
+    (assoc-in state-map [final-state :final] func)))
+
+;(bind-func (bind-func {} :normal [\" \a \y \y] 'go) :normal [\" \a \y \j] 'down)
+;(bind-func :normal [\" opt-x \y] 'done)
+
+;(def alpha (apply alt (map #(char (+ 97 %)) (range 26))))
+;(defn register [] (alt nil [\" (append :register alpha)]))
+;(defn num-arg [arg-name] (alt nil [(append arg-name (digit)) (num-arg arg-name)]))
+
+;(bind-keys :cmd [(num-arg :early-num) (register) \y
+;                 (alt (append :double \y) (movement) (visual-block))])
+
 ; -- main --
 
 (doswing-wait
