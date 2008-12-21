@@ -350,10 +350,8 @@
           (if (old-branch :final)
             (throw (Exception. "New binding would replace existing binding"))
             (throw (Exception. "New binding would eclipse existing binding"))))
-          (assoc-in state-map [next :final] stroke))
-    :else (throw (Exception. (str "Unknown bind atom " stroke)))))
-
-; XXX never see the 'replace' exception?
+        (assoc-in state-map [next :final] stroke))
+    :else (throw (Exception. (str "Unknown bind obj " stroke)))))
 
 (defn opt-x [state-map named-states next strokes]
   (let [state-map (bind-keys state-map named-states next (cons \x strokes))]
@@ -362,10 +360,9 @@
 (defn bind-keys [state-map named-states next [stroke & strokes :as v]]
   (if-not v
     state-map
-    (do
-      (when (and (:final (state-map next)) (not *force-bind?*))
-        (throw (Exception. "Existing binding would eclipse new binding")))
-      (let [func (if (fn? stroke) stroke (stroke-fn stroke))]
+    (let [func (if (fn? stroke) stroke (stroke-fn stroke))]
+      (if (and (not *force-bind?*) (:final (state-map next)) strokes)
+        (throw (Exception. "Existing binding would eclipse new binding"))
         (func state-map named-states next strokes)))))
 
 ;(bind-keys (bind-keys {} {} :normal [\" \a \y \y 'go]) {} :normal [\" \a \y \j 'down])
