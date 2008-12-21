@@ -353,9 +353,14 @@
         (assoc-in state-map [next :final] stroke))
     :else (throw (Exception. (str "Unknown bind obj " stroke)))))
 
-(defn opt-x [state-map named-states next strokes]
-  (let [state-map (bind-keys state-map named-states next (cons \x strokes))]
-    (bind-keys state-map named-states next strokes)))
+(defn alt [& options]
+  (fn [state-map named-states next strokes]
+    (reduce (fn [state-map option]
+              (bind-keys state-map named-states next
+                         (if (nil? option)
+                           strokes
+                           (cons option strokes))))
+            state-map options)))
 
 (defn bind-keys [state-map named-states next [stroke & strokes :as v]]
   (if-not v
@@ -365,8 +370,15 @@
         (throw (Exception. "Existing binding would eclipse new binding"))
         (func state-map named-states next strokes)))))
 
+
+
 ;(bind-keys (bind-keys {} {} :normal [\" \a \y \y 'go]) {} :normal [\" \a \y \j 'down])
-;(bind-keys {} {} :normal [\" opt-x \y 'done])
+;(bind-keys {} {} :normal [\" (alt nil x) \y 'done])
+;(bind-keys {} {} :normal (alt \0 \1 \2 \3 \4 \5 \6 \7 \8 \9))
+
+;(defn digit [state-map named-states next strokes] ...)
+;(defgram digit (alt \0 \1 \2 \3 \4 \5 \6 \7 \8 \9))
+;(defgram numeric (alt nil [digit numeric]))
 
 ;(def alpha (apply alt (map #(char (+ 97 %)) (range 26))))
 ;(defn register [] (alt nil [\" (append :register alpha)]))
