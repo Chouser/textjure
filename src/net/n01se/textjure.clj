@@ -116,7 +116,7 @@
   converts a simple value to the object needed by the method.")
 
 (defmacro def-style [nm & items]
-  `(def ~(with-meta nm (assoc ^nm :doc (last items)))
+  `(def ~(with-meta nm (assoc (meta nm) :doc (last items)))
      (doto (new ~'SimpleAttributeSet)
        ~@(for [[k v] (partition 2 items)]
            (let [[method valfn] (style-setters k)]
@@ -319,13 +319,13 @@
   (or (if-let [v (resolve x)]
         (let [ns-name (str (.name (.ns v)))
               path (first (re-seq #"^.*(?=/[^/]*$)" (.replace ns-name "." "/")))
-              fname (str path "/" (:file ^v))]
+              fname (str path "/" (:file (meta v)))]
           (when-let [strm (.getResourceAsStream (RT/baseLoader) fname)]
             (let [[text lines] (with-open [strm strm] (read-stream-lines strm))]
               (doswing
                 (doto file-pane
                   (.setText text)
-                  (.setCaretPosition (lines (:line ^v)))
+                  (.setCaretPosition (lines (:line (meta v))))
                   (.requestFocusInWindow))))
             fname)))
         (str "Source not found for " x)))
@@ -389,40 +389,41 @@
 
 ; -- main --
 
-(doswing-wait
-  (defvar repl-keymap
-    (JTextComponent/addKeymap
-      "repl" (JTextComponent/getKeymap JTextComponent/DEFAULT_KEYMAP))
-    "KeyMap to be used in REPL panes")
+(defn -main [ & args]
+  (doswing-wait
+    (defvar repl-keymap
+      (JTextComponent/addKeymap
+        "repl" (JTextComponent/getKeymap JTextComponent/DEFAULT_KEYMAP))
+      "KeyMap to be used in REPL panes")
 
-  (defvar repl-widget (make-repl-widget) "Main REPL widget")
-  (defvar file-pane   (make-text-pane)   "Main file edit pane"))
+    (defvar repl-widget (make-repl-widget) "Main REPL widget")
+    (defvar file-pane   (make-text-pane)   "Main file edit pane"))
 
-(when *command-line-args*
-  (let [text (slurp (first *command-line-args*))]
-    (doswing (.setText file-pane text))))
+  (when args
+    (let [text (slurp (first args))]
+      (doswing (.setText file-pane text))))
 
-(doswing
-  (doto (JFrame. "textjure")
-    (.add (doto (JSplitPane.
-                  JSplitPane/VERTICAL_SPLIT
-                  (doto (JScrollPane. file-pane) ; XXX should be in file-widget
-                    (-> .getViewport (.setBackground (hex-color 0))))
-                  (:outer repl-widget))))
-    (.setDefaultCloseOperation JFrame/EXIT_ON_CLOSE)
-    .pack
-    (.setVisible true))
-  (.requestFocusInWindow (:log repl-widget)))
+  (doswing
+    (doto (JFrame. "textjure")
+      (.add (doto (JSplitPane.
+                    JSplitPane/VERTICAL_SPLIT
+                    (doto (JScrollPane. file-pane) ; XXX should be in file-widget
+                      (-> .getViewport (.setBackground (hex-color 0))))
+                    (:outer repl-widget))))
+      (.setDefaultCloseOperation JFrame/EXIT_ON_CLOSE)
+      .pack
+      (.setVisible true))
+    (.requestFocusInWindow (:log repl-widget)))
 
-(bind-key repl-keymap "ENTER"
-  (assert-swing)
-  (let [widget (:widget event)
-        doc (.getDocument (:log widget))
-        offset @(:log-end widget)
-        text (.getText doc offset (- (.getLength doc) offset))]
-    (.insertString doc (.getLength doc) "\n" input-style)
-    (.setCaretPosition (:log widget) (.getLength doc))
-    (send-off (:agent widget) repl-eval widget text)))
+  (bind-key repl-keymap "ENTER"
+    (assert-swing)
+    (let [widget (:widget event)
+          doc (.getDocument (:log widget))
+          offset @(:log-end widget)
+          text (.getText doc offset (- (.getLength doc) offset))]
+      (.insertString doc (.getLength doc) "\n" input-style)
+      (.setCaretPosition (:log widget) (.getLength doc))
+      (send-off (:agent widget) repl-eval widget text))))
 
         ;(if-let [strm (.getResourceAsStream (RT/baseLoader) filename)]
             ;(with-open [rdr (LineNumberedReader. (InputStreamReader. strm))]
